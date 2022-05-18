@@ -1,0 +1,1402 @@
+---
+title: "Dengue Spreading in San Juan, Puerto Rico"
+output:
+  html_notebook:
+    theme: united
+    toc: yes
+---
+# II. DataDescription and Analysis
+
+### II. A. Dataset
+```{r libraries and data import, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+library(dplyr) # for select, filter, summarize, etc.
+library(plotly) # for fancy plots
+library(DataExplorer) # for EDA
+library(corrplot) # for correlation plots
+library(ggplot2) # for plots
+library(purrr) # for functionals
+library(kableExtra) # for fancy tables display
+library(data.table) # for tables
+library(RColorBrewer)
+# for "total_cases" analysis
+library(kdensity) # for kernel density estimates
+library(SkewHyperbolic)
+library(extraDistr)
+library(ggpubr)
+library(viridis)
+library(caret)
+library(psycho)
+library(tidyverse)
+
+
+setwd("C:/Users/Luis/Desktop/IST/dengue-mosquito-spreading")
+
+# we read the 4 datasets 
+  # training data with NAs
+  train.na <- read.table("Train_Set.csv", sep = ",", header = TRUE) 
+  # training data without NAs
+  train <- read.table("train_without_na.csv", sep = ",", header = TRUE)
+  # labels of the training data
+  train_labels <- read.table("Train_Set_Labels.csv", sep = ",", header = TRUE) 
+  # test data with NAs
+  test.na <- read.table("Test_Set.csv", sep = ",", header = TRUE) 
+  # training data without NAs
+  test <- read.table("test_without_na.csv", sep = ",", header = TRUE) 
+
+  
+# We are only interested in the city of San Juan.
+train.na <- train.na %>% filter(city == 'sj')
+train_labels <- train_labels %>% filter(city == 'sj')
+test.na <- test.na %>% filter(city == 'sj')
+
+train$X <- NULL
+train.na$city <- NULL
+train_labels$city <- NULL
+test.na$city <- NULL
+test$X <- NULL
+
+# # Generic view of datasets
+# data_struct <- list("Training_data" = list("Features" = train, 
+#                     "Labels" = train_labels),
+#                     "Test_data" = test)
+# plot_str(data_struct)
+
+train$week_start_date <- NULL
+train.na$week_start_date <- NULL
+test$week_start_date <- NULL
+```
+
+## II. B. Total Cases of Dengue
+
+
+```{r echo=FALSE}
+#dataset1 - reanalysis
+train_data1 <- train[,c(1:6,9:12,17,13)]
+# train_data1$reanalysis_precip_amt_kg_per_m2 <- log(train_data1$reanalysis_precip_amt_kg_per_m2 + 1)
+# dataset2 - precip
+train_data2 <- train[,c(1:6,9:12,17,7)]
+# train_data2$precipitation_amt_mm <- log(train_data2$precipitation_amt_mm + 1)
+# dataset3 -station
+train_data3 <- train[,c(1:6,9:12,17,22)]
+train_data3$station_precip_mm <- log(train_data3$station_precip_mm + 1)
+
+class_funct <- function(x) {
+  if(x <= 8) { # first quantile without oultiers
+    return(1)
+  } else if(x <= 17) { # first quantile without oultiers
+    return(2)
+  } else if(x <= 31) { # median without oultiers
+    return(3)
+  } else if(x <= 79) { # third quantile without oultiers
+    return(4)
+  }
+  return(5) # outliers
+}
+
+train_labels <- train_labels %>% mutate(class = map_dbl(total_cases, class_funct))
+train_labels$class <- as.factor(train_labels$class)
+
+train_total1 <- merge(train_data1, train_labels)
+train_total1 <- train_total1[,c(14, 1:12)]
+#train_total1[,c(2:12)] <- as.data.frame(scale(train_total1[,c(2:12)]))
+
+train_total2 <- merge(train_data2, train_labels)
+train_total2 <- train_total2[,c(14, 1:12)]
+#train_total2[,c(2:12)] <- as.data.frame(scale(train_total2[,c(2:12)]))
+
+train_total3 <- merge(train_data3, train_labels)
+train_total3 <- train_total3[,c(14, 1:12)]
+#train_total3[,c(2:12)] <- as.data.frame(scale(train_total3[,c(2:12)]))
+```
+
+# IV. Linear Regression of an Indicator Matrix
+```{r}
+ntrain <- dim(train_total1)[1]
+k<-5
+accuracy1 <- 0
+accuracy2 <- 0
+accuracy3 <- 0
+logaccuracy1 <- 0
+logaccuracy2 <- 0
+logaccuracy3 <- 0
+
+
+```
+
+```{r}
+for (i in 1:3) {
+  set.seed(i)
+# we shuffle the data and partition it in 5 folds
+train_total1 <- train_total1[sample(ntrain),]
+train_total2 <- train_total2[sample(ntrain),]
+train_total3 <- train_total3[sample(ntrain),]
+
+set1.1 <- train_total1[c(1:174),]
+set1.2 <- train_total1[c(174:348),]
+set1.3 <- train_total1[c(349:521),]
+set1.4 <- train_total1[c(522:694),]
+set1.5 <- train_total1[c(695:867),]
+
+set2.1 <- train_total2[c(1:174),]
+set2.2 <- train_total2[c(174:348),]
+set2.3 <- train_total2[c(349:521),]
+set2.4 <- train_total2[c(522:694),]
+set2.5 <- train_total2[c(695:867),]
+
+set3.1 <- train_total3[c(1:174),]
+set3.2 <- train_total3[c(174:348),]
+set3.3 <- train_total3[c(349:521),]
+set3.4 <- train_total3[c(522:694),]
+set3.5 <- train_total3[c(695:867),]
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train1 <- rbind(set1.1, set1.2, set1.5, set1.4)
+ntrain1 <- dim(train1)[1]
+Y.1<-matrix(rep(0,ntrain1*k),nrow=ntrain1)
+test1 <- set1.3
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train2 <- rbind(set2.1, set2.2, set2.5, set2.4)
+ntrain2 <- dim(train2)[1]
+Y.2<-matrix(rep(0,ntrain2*k),nrow=ntrain2)
+test2 <- set2.3
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train3 <- rbind(set3.1, set3.2, set3.5, set3.4)
+ntrain3 <- dim(train3)[1]
+Y.3<-matrix(rep(0,ntrain3*k),nrow=ntrain3)
+test3 <- set3.3
+
+for (i in 1:ntrain1) {
+  Y.1[i,train1$class[i]]<-1
+}
+  # for dataset 1
+  regfits <- lm(Y.1~year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(reanalysis_precip_amt_kg_per_m2+1),
+                  data=train1)
+  
+for (i in 1:ntrain2) {
+   Y.2[i,train2$class[i]]<-1
+}
+  # for dataset 2
+  regfits <- lm(Y.2 ~ year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(precipitation_amt_mm+1),
+                  data=train2)
+  
+for (i in 1:ntrain3) {
+   Y.3[i,train3$class[i]]<-1
+}
+  # for dataset 3
+  regfits <- lm(Y.3 ~ year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(station_precip_mm+1),
+                  data=train3)
+
+# cat("DATASET 1: REANALYSIS")
+ntest1<-dim(test1)[1]
+yhattest <- numeric(ntest1)
+yfitstest <- matrix(rep(0,ntest1*k),nrow=ntest1)
+for (i in 1:ntest1) {
+  yfitstest[i,] <- as.matrix(test1[i,2:13])%*%regfits$coef[2:13,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+#  sum(yhattest[1:ntest1]!=test1[,1])/ntest1
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy1 <- accuracy1 + sum(yhattest[1:ntest1]==test1[,1])/ntest1
+
+# cat("DATASET 2: precip")
+ntest2<-dim(test2)[1]
+yhattest <- numeric(ntest2)
+yfitstest <- matrix(rep(0,ntest2*k),nrow=ntest2)
+for (i in 1:ntest2) {
+  yfitstest[i,] <- as.matrix(test2[i,2:13])%*%regfits$coef[2:13,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest2]!=test2[,1])/ntest2
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy2 <- accuracy2 +sum(yhattest[1:ntest2]==test2[,1])/ntest2
+
+# cat("DATASET 3: station")
+ntest3<-dim(test3)[1]
+yhattest <- numeric(ntest3)
+yfitstest <- matrix(rep(0,ntest3*k),nrow=ntest3)
+for (i in 1:ntest3) {
+  yfitstest[i,] <- as.matrix(test3[i,2:13])%*%regfits$coef[2:13,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest3]!=test3[,1])/ntest3
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy3 <- accuracy3 + sum(yhattest[1:ntest3]==test3[,1])/ntest3
+
+#dataset 1
+model <- nnet::multinom(class ~ year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(reanalysis_precip_amt_kg_per_m2+1),
+                  data=train1)
+predicted.classes <- model %>% predict(test1)
+logaccuracy1 <- logaccuracy1 + mean(predicted.classes == test1$class)# accuracy
+
+#dataset 2
+model <- nnet::multinom(class ~ year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(precipitation_amt_mm+1),
+                  data=train2)
+predicted.classes <- model %>% predict(test2)
+logaccuracy2 <- logaccuracy2 + mean(predicted.classes == test2$class)# accuracy
+
+#dataset 3
+model <- nnet::multinom(class ~ year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(station_precip_mm+1),
+                  data=train3)
+
+predicted.classes3.1 <- model %>% predict(test3)
+logaccuracy3 <- logaccuracy3 + mean(predicted.classes3.1 == test3$class) # accuracy
+
+#-----------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train1 <- rbind(set1.3, set1.2, set1.5, set1.4)
+ntrain1 <- dim(train1)[1]
+Y.1<-matrix(rep(0,ntrain1*k),nrow=ntrain1)
+test1 <- set1.1
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train2 <- rbind(set2.3, set2.2, set2.5, set2.4)
+ntrain2 <- dim(train2)[1]
+Y.2<-matrix(rep(0,ntrain2*k),nrow=ntrain2)
+test2 <- set2.1
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train3 <- rbind(set3.3, set3.2, set3.5, set3.4)
+ntrain3 <- dim(train3)[1]
+Y.3<-matrix(rep(0,ntrain3*k),nrow=ntrain3)
+test3 <- set3.1
+
+for (i in 1:ntrain1) {
+  Y.1[i,train1$class[i]]<-1
+}
+  # for dataset 1
+  regfits <- lm(Y.1~year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(reanalysis_precip_amt_kg_per_m2+1)
+                  , data=train1)
+
+for (i in 1:ntrain2) {
+   Y.2[i,train2$class[i]]<-1
+}
+  # for dataset 2
+  regfits <- lm(Y.2~year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(precipitation_amt_mm+1)
+                  , data=train2)
+
+for (i in 1:ntrain3) {
+   Y.3[i,train3$class[i]]<-1
+}
+  # for dataset 3
+  regfits <- lm(Y.3~year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(station_precip_mm+1)
+                  , data=train3)
+
+
+# cat("DATASET 1: REANALYSIS")
+ntest1<-dim(test1)[1]
+yhattest <- numeric(ntest1)
+yfitstest <- matrix(rep(0,ntest1*k),nrow=ntest1)
+for (i in 1:ntest1) {
+  yfitstest[i,] <- as.matrix(test1[i,2:13])%*%regfits$coef[2:13,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+#  sum(yhattest[1:ntest1]!=test1[,1])/ntest1
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy1 <- accuracy1 + sum(yhattest[1:ntest1]==test1[,1])/ntest1
+
+# cat("DATASET 2: precip")
+ntest2<-dim(test2)[1]
+yhattest <- numeric(ntest2)
+yfitstest <- matrix(rep(0,ntest2*k),nrow=ntest2)
+for (i in 1:ntest2) {
+  yfitstest[i,] <- as.matrix(test2[i,2:13])%*%regfits$coef[2:13,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest2]!=test2[,1])/ntest2
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy2 <- accuracy2 +sum(yhattest[1:ntest2]==test2[,1])/ntest2
+
+# cat("DATASET 3: station")
+ntest3<-dim(test3)[1]
+yhattest <- numeric(ntest3)
+yfitstest <- matrix(rep(0,ntest3*k),nrow=ntest3)
+for (i in 1:ntest3) {
+  yfitstest[i,] <- as.matrix(test3[i,2:13])%*%regfits$coef[2:13,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest3]!=test3[,1])/ntest3
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy3 <- accuracy3 + sum(yhattest[1:ntest3]==test3[,1])/ntest3
+
+#dataset 1
+model <- nnet::multinom(class ~ year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(reanalysis_precip_amt_kg_per_m2+1),
+                  data=train1)
+predicted.classes <- model %>% predict(test1)
+logaccuracy1 <- logaccuracy1 + mean(predicted.classes == test1$class)# accuracy
+
+#dataset 2
+model <- nnet::multinom(class ~ year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(precipitation_amt_mm+1),
+                  data=train2)
+predicted.classes <- model %>% predict(test2)
+logaccuracy2 <- logaccuracy2 + mean(predicted.classes == test2$class)# accuracy
+
+#dataset 3
+model <- nnet::multinom(class ~ year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(station_precip_mm+1),
+                  data=train3)
+
+predicted.classes3.2 <- model %>% predict(test3)
+logaccuracy3 <- logaccuracy3 + mean(predicted.classes3.2 == test3$class) # accuracy
+
+#--------------------------------------------------------------------------
+#--------------------------------------------------------------------------
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train1 <- rbind(set1.1, set1.3, set1.5, set1.4)
+ntrain1 <- dim(train1)[1]
+Y.1<-matrix(rep(0,ntrain1*k),nrow=ntrain1)
+test1 <- set1.2
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train2 <- rbind(set2.1, set2.3, set2.5, set2.4)
+ntrain2 <- dim(train2)[1]
+Y.2<-matrix(rep(0,ntrain2*k),nrow=ntrain2)
+test2 <- set2.2
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train3 <- rbind(set3.1, set3.3, set3.5, set3.4)
+ntrain3 <- dim(train3)[1]
+Y.3<-matrix(rep(0,ntrain3*k),nrow=ntrain3)
+test3 <- set3.2
+
+for (i in 1:ntrain1) {
+  Y.1[i,train1$class[i]]<-1
+}
+  # for dataset 1
+  regfits <- lm(Y.1~year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(reanalysis_precip_amt_kg_per_m2+1)
+                  , data=train1)
+
+for (i in 1:ntrain2) {
+   Y.2[i,train2$class[i]]<-1
+}
+  # for dataset 2
+  regfits <- lm(Y.2~year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(precipitation_amt_mm+1)
+                  , data=train2)
+
+for (i in 1:ntrain3) {
+   Y.3[i,train3$class[i]]<-1
+}
+  # for dataset 3
+  regfits <- lm(Y.3~year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(station_precip_mm+1)
+                  , data=train3)
+
+
+# cat("DATASET 1: REANALYSIS")
+ntest1<-dim(test1)[1]
+yhattest <- numeric(ntest1)
+yfitstest <- matrix(rep(0,ntest1*k),nrow=ntest1)
+for (i in 1:ntest1) {
+  yfitstest[i,] <- as.matrix(test1[i,2:13])%*%regfits$coef[2:13,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+#  sum(yhattest[1:ntest1]!=test1[,1])/ntest1
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy1 <- accuracy1 + sum(yhattest[1:ntest1]==test1[,1])/ntest1
+
+# cat("DATASET 2: precip")
+ntest2<-dim(test2)[1]
+yhattest <- numeric(ntest2)
+yfitstest <- matrix(rep(0,ntest2*k),nrow=ntest2)
+for (i in 1:ntest2) {
+  yfitstest[i,] <- as.matrix(test2[i,2:13])%*%regfits$coef[2:13,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest2]!=test2[,1])/ntest2
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy2 <- accuracy2 +sum(yhattest[1:ntest2]==test2[,1])/ntest2
+
+# cat("DATASET 3: station")
+ntest3<-dim(test3)[1]
+yhattest <- numeric(ntest3)
+yfitstest <- matrix(rep(0,ntest3*k),nrow=ntest3)
+for (i in 1:ntest3) {
+  yfitstest[i,] <- as.matrix(test3[i,2:13])%*%regfits$coef[2:13,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest3]!=test3[,1])/ntest3
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy3 <- accuracy3 + sum(yhattest[1:ntest3]==test3[,1])/ntest3
+
+#dataset 1
+model <- nnet::multinom(class ~ year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(reanalysis_precip_amt_kg_per_m2+1),
+                  data=train1)
+predicted.classes <- model %>% predict(test1)
+logaccuracy1 <- logaccuracy1 + mean(predicted.classes == test1$class)# accuracy
+
+#dataset 2
+model <- nnet::multinom(class ~ year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(precipitation_amt_mm+1),
+                  data=train2)
+predicted.classes <- model %>% predict(test2)
+logaccuracy2 <- logaccuracy2 + mean(predicted.classes == test2$class)# accuracy
+
+#dataset 3
+model <- nnet::multinom(class ~ year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(station_precip_mm+1),
+                  data=train3)
+
+predicted.classes3.3 <- model %>% predict(test3)
+logaccuracy3 <- logaccuracy3 + mean(predicted.classes3.3 == test3$class) # accuracy
+
+#-----------------------------------------------------------------------------
+#-----------------------------------------------------------------------------
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train1 <- rbind(set1.1, set1.2, set1.5, set1.3)
+ntrain1 <- dim(train1)[1]
+Y.1<-matrix(rep(0,ntrain1*k),nrow=ntrain1)
+test1 <- set1.4
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train2 <- rbind(set2.1, set2.2, set2.5, set2.3)
+ntrain2 <- dim(train2)[1]
+Y.2<-matrix(rep(0,ntrain2*k),nrow=ntrain2)
+test2 <- set2.4
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train3 <- rbind(set3.1, set3.2, set3.5, set3.3)
+ntrain3 <- dim(train3)[1]
+Y.3<-matrix(rep(0,ntrain3*k),nrow=ntrain3)
+test3 <- set3.4
+
+for (i in 1:ntrain1) {
+  Y.1[i,train1$class[i]]<-1
+}
+  # for dataset 1
+  regfits <- lm(Y.1~year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(reanalysis_precip_amt_kg_per_m2+1)
+                  , data=train1)
+ 
+for (i in 1:ntrain2) {
+   Y.2[i,train2$class[i]]<-1
+}
+  # for dataset 2
+  regfits <- lm(Y.2~year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(precipitation_amt_mm+1)
+                  , data=train2)
+
+for (i in 1:ntrain3) {
+   Y.3[i,train3$class[i]]<-1
+}
+  # for dataset 3
+  regfits <- lm(Y.3~year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(station_precip_mm+1)
+                  , data=train3)
+
+# cat("DATASET 1: REANALYSIS")
+ntest1<-dim(test1)[1]
+yhattest <- numeric(ntest1)
+yfitstest <- matrix(rep(0,ntest1*k),nrow=ntest1)
+for (i in 1:ntest1) {
+  yfitstest[i,] <- as.matrix(test1[i,2:13])%*%regfits$coef[2:13,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+#  sum(yhattest[1:ntest1]!=test1[,1])/ntest1
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy1 <- accuracy1 + sum(yhattest[1:ntest1]==test1[,1])/ntest1
+
+# cat("DATASET 2: precip")
+ntest2<-dim(test2)[1]
+yhattest <- numeric(ntest2)
+yfitstest <- matrix(rep(0,ntest2*k),nrow=ntest2)
+for (i in 1:ntest2) {
+  yfitstest[i,] <- as.matrix(test2[i,2:13])%*%regfits$coef[2:13,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest2]!=test2[,1])/ntest2
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy2 <- accuracy2 +sum(yhattest[1:ntest2]==test2[,1])/ntest2
+
+# cat("DATASET 3: station")
+ntest3<-dim(test3)[1]
+yhattest <- numeric(ntest3)
+yfitstest <- matrix(rep(0,ntest3*k),nrow=ntest3)
+for (i in 1:ntest3) {
+  yfitstest[i,] <- as.matrix(test3[i,2:13])%*%regfits$coef[2:13,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest3]!=test3[,1])/ntest3
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy3 <- accuracy3 + sum(yhattest[1:ntest3]==test3[,1])/ntest3
+
+#dataset 1
+model <- nnet::multinom(class ~ year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(reanalysis_precip_amt_kg_per_m2+1),
+                  data=train1)
+predicted.classes3.3 <- model %>% predict(test1)
+logaccuracy1 <- logaccuracy1 + mean(predicted.classes == test1$class)# accuracy
+
+#dataset 2
+model <- nnet::multinom(class ~ year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(precipitation_amt_mm+1),
+                  data=train2)
+predicted.classes <- model %>% predict(test2)
+logaccuracy2 <- logaccuracy2 + mean(predicted.classes == test2$class)# accuracy
+
+#dataset 3
+model <- nnet::multinom(class ~ year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(station_precip_mm+1),
+                  data=train3)
+
+predicted.classes3.4 <- model %>% predict(test3)
+logaccuracy3 <- logaccuracy3 + mean(predicted.classes3.4 == test3$class) # accuracy
+
+
+#--------------------------------------------------------------------------
+#--------------------------------------------------------------------------
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train1 <- rbind(set1.1, set1.2, set1.3, set1.4)
+ntrain1 <- dim(train1)[1]
+Y.1<-matrix(rep(0,ntrain1*k),nrow=ntrain1)
+test1 <- set1.5
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train2 <- rbind(set2.1, set2.2, set2.3, set2.4)
+ntrain2 <- dim(train2)[1]
+Y.2<-matrix(rep(0,ntrain2*k),nrow=ntrain2)
+test2 <- set2.5
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train3 <- rbind(set3.1, set3.2, set3.3, set3.4)
+ntrain3 <- dim(train3)[1]
+Y.3<-matrix(rep(0,ntrain3*k),nrow=ntrain3)
+test3 <- set3.5
+
+for (i in 1:ntrain1) {
+  Y.1[i,train1$class[i]]<-1
+}
+  # for dataset 1
+  regfits <- lm(Y.1~year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(reanalysis_precip_amt_kg_per_m2+1)
+                  , data=train1)
+
+for (i in 1:ntrain2) {
+   Y.2[i,train2$class[i]]<-1
+}
+  # for dataset 2
+  regfits <- lm(Y.2~year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(precipitation_amt_mm+1)
+                  , data=train2)
+  
+for (i in 1:ntrain3) {
+   Y.3[i,train3$class[i]]<-1
+}
+  # for dataset 3
+  regfits <- lm(Y.3~year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(station_precip_mm+1)
+                  , data=train3)
+
+
+# cat("DATASET 1: REANALYSIS")
+ntest1<-dim(test1)[1]
+yhattest <- numeric(ntest1)
+yfitstest <- matrix(rep(0,ntest1*k),nrow=ntest1)
+for (i in 1:ntest1) {
+  yfitstest[i,] <- as.matrix(test1[i,2:13])%*%regfits$coef[2:13,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+#  sum(yhattest[1:ntest1]!=test1[,1])/ntest1
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy1 <- accuracy1 + sum(yhattest[1:ntest1]==test1[,1])/ntest1
+
+# cat("DATASET 2: precip")
+ntest2<-dim(test2)[1]
+yhattest <- numeric(ntest2)
+yfitstest <- matrix(rep(0,ntest2*k),nrow=ntest2)
+for (i in 1:ntest2) {
+  yfitstest[i,] <- as.matrix(test2[i,2:13])%*%regfits$coef[2:13,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest2]!=test2[,1])/ntest2
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy2 <- accuracy2 +sum(yhattest[1:ntest2]==test2[,1])/ntest2
+
+# cat("DATASET 3: station")
+ntest3<-dim(test3)[1]
+yhattest <- numeric(ntest3)
+yfitstest <- matrix(rep(0,ntest3*k),nrow=ntest3)
+for (i in 1:ntest3) {
+  yfitstest[i,] <- as.matrix(test3[i,2:13])%*%regfits$coef[2:13,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest3]!=test3[,1])/ntest3
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy3 <- accuracy3 + sum(yhattest[1:ntest3]==test3[,1])/ntest3
+
+#dataset 1
+model <- nnet::multinom(class ~ year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(reanalysis_precip_amt_kg_per_m2+1),
+                  data=train1)
+predicted.classes <- model %>% predict(test1)
+logaccuracy1 <- logaccuracy1 + mean(predicted.classes == test1$class)# accuracy
+
+#dataset 2
+model <- nnet::multinom(class ~ year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(precipitation_amt_mm+1),
+                  data=train2)
+predicted.classes <- model %>% predict(test2)
+logaccuracy2 <- logaccuracy2 + mean(predicted.classes == test2$class)# accuracy
+
+#dataset 3
+model <- nnet::multinom(class ~ year+weekofyear+ndvi_ne+ndvi_nw+ndvi_se+ndvi_sw+
+                  reanalysis_avg_temp_k+reanalysis_dew_point_temp_k+
+                  reanalysis_max_air_temp_k+reanalysis_min_air_temp_k+
+                  reanalysis_tdtr_k+log(station_precip_mm+1),
+                  data=train3)
+
+predicted.classes3.5 <- model %>% predict(test3)
+logaccuracy3 <- logaccuracy3 + mean(predicted.classes3.5 == test3$class) # accuracy
+}
+
+cat("Accuracy 1: ", accuracy1/15, "\n")
+cat("Accuracy 2:", accuracy2/15, "\n")
+cat("Accuracy 3:", accuracy3/15, "\n")
+
+cat("LOG:Accuracy 1: ", logaccuracy1/15, "\n")
+cat("LOG:Accuracy 2:", logaccuracy2/15, "\n")
+cat("LOG:Accuracy 3:", logaccuracy3/15, "\n")
+```
+
+PCA
+```{r}
+  train_total1 <- read.table("train_precip_pca.csv", sep = ",", header = TRUE) 
+  # test data with NAs
+  train_total2 <- read.table("train_station_pca.csv", sep = ",", header = TRUE) 
+  # training data without NAs
+  train_total3 <- read.table("train_reanalysis_pca.csv", sep = ",", header = TRUE) 
+  
+  train_total1$X <- NULL
+   train_total2$X <- NULL
+    train_total3$X <- NULL
+    
+train_total1$class <- as.factor(train_total1$class)
+train_total2$class <- as.factor(train_total2$class)
+train_total3$class <- as.factor(train_total3$class)
+
+train_total1 <- train_total1[,c(6,1:5)]
+train_total2 <- train_total2[,c(6,1:5)]
+train_total3 <- train_total3[,c(6,1:5)]
+```
+
+
+
+```{r}
+for (i in 1:3) {
+  set.seed(i)
+# we shuffle the data and partition it in 5 folds
+train_total1 <- train_total1[sample(ntrain),]
+train_total2 <- train_total2[sample(ntrain),]
+train_total3 <- train_total3[sample(ntrain),]
+
+set1.1 <- train_total1[c(1:174),]
+set1.2 <- train_total1[c(174:348),]
+set1.3 <- train_total1[c(349:521),]
+set1.4 <- train_total1[c(522:694),]
+set1.5 <- train_total1[c(695:867),]
+
+set2.1 <- train_total2[c(1:174),]
+set2.2 <- train_total2[c(174:348),]
+set2.3 <- train_total2[c(349:521),]
+set2.4 <- train_total2[c(522:694),]
+set2.5 <- train_total2[c(695:867),]
+
+set3.1 <- train_total3[c(1:174),]
+set3.2 <- train_total3[c(174:348),]
+set3.3 <- train_total3[c(349:521),]
+set3.4 <- train_total3[c(522:694),]
+set3.5 <- train_total3[c(695:867),]
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train1 <- rbind(set1.1, set1.2, set1.5, set1.4)
+ntrain1 <- dim(train1)[1]
+Y.1<-matrix(rep(0,ntrain1*k),nrow=ntrain1)
+test1 <- set1.3
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train2 <- rbind(set2.1, set2.2, set2.5, set2.4)
+ntrain2 <- dim(train2)[1]
+Y.2<-matrix(rep(0,ntrain2*k),nrow=ntrain2)
+test2 <- set2.3
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train3 <- rbind(set3.1, set3.2, set3.5, set3.4)
+ntrain3 <- dim(train3)[1]
+Y.3<-matrix(rep(0,ntrain3*k),nrow=ntrain3)
+test3 <- set3.3
+
+for (i in 1:ntrain1) {
+  Y.1[i,train1$class[i]]<-1
+}
+  # for dataset 1
+  regfits <- lm(Y.1~PC1+PC2+PC3+PC4+PC5, data=train1)
+for (i in 1:ntrain2) {
+   Y.2[i,train2$class[i]]<-1
+}
+  # for dataset 2
+  regfits <- lm(Y.2~PC1+PC2+PC3+PC4+PC5
+                  , data=train2)
+  
+for (i in 1:ntrain3) {
+   Y.3[i,train3$class[i]]<-1
+}
+  # for dataset 3
+  regfits <- lm(Y.3~PC1+PC2+PC3+PC4+PC5
+                  , data=train3)
+
+# cat("DATASET 1: REANALYSIS")
+ntest1<-dim(test1)[1]
+yhattest <- numeric(ntest1)
+yfitstest <- matrix(rep(0,ntest1*k),nrow=ntest1)
+for (i in 1:ntest1) {
+  yfitstest[i,] <- as.matrix(test1[i,2:6])%*%regfits$coef[2:6,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+#  sum(yhattest[1:ntest1]!=test1[,1])/ntest1
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy1 <- accuracy1 + sum(yhattest[1:ntest1]==test1[,1])/ntest1
+
+# cat("DATASET 2: precip")
+ntest2<-dim(test2)[1]
+yhattest <- numeric(ntest2)
+yfitstest <- matrix(rep(0,ntest2*k),nrow=ntest2)
+for (i in 1:ntest2) {
+  yfitstest[i,] <- as.matrix(test2[i,2:6])%*%regfits$coef[2:6,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest2]!=test2[,1])/ntest2
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy2 <- accuracy2 +sum(yhattest[1:ntest2]==test2[,1])/ntest2
+
+# cat("DATASET 3: station")
+ntest3<-dim(test3)[1]
+yhattest <- numeric(ntest3)
+yfitstest <- matrix(rep(0,ntest3*k),nrow=ntest3)
+for (i in 1:ntest3) {
+  yfitstest[i,] <- as.matrix(test3[i,2:6])%*%regfits$coef[2:6,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest3]!=test3[,1])/ntest3
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy3 <- accuracy3 + sum(yhattest[1:ntest3]==test3[,1])/ntest3
+
+#dataset 1
+model <- nnet::multinom(class ~ PC1+PC2+PC3+PC4+PC5,
+                  data=train1)
+predicted.classes <- model %>% predict(test1)
+logaccuracy1 <- logaccuracy1 + mean(predicted.classes == test1$class)# accuracy
+
+#dataset 2
+model <- nnet::multinom(class ~PC1+PC2+PC3+PC4+PC5,
+                  data=train2)
+predicted.classes <- model %>% predict(test2)
+logaccuracy2 <- logaccuracy2 + mean(predicted.classes == test2$class)# accuracy
+
+#dataset 3
+model <- nnet::multinom(class ~ PC1+PC2+PC3+PC4+PC5,
+                  data=train3)
+
+predicted.classes <- model %>% predict(test3)
+logaccuracy3 <- logaccuracy3 + mean(predicted.classes == test3$class) # accuracy
+
+#-----------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train1 <- rbind(set1.3, set1.2, set1.5, set1.4)
+ntrain1 <- dim(train1)[1]
+Y.1<-matrix(rep(0,ntrain1*k),nrow=ntrain1)
+test1 <- set1.1
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train2 <- rbind(set2.3, set2.2, set2.5, set2.4)
+ntrain2 <- dim(train2)[1]
+Y.2<-matrix(rep(0,ntrain2*k),nrow=ntrain2)
+test2 <- set2.1
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train3 <- rbind(set3.3, set3.2, set3.5, set3.4)
+ntrain3 <- dim(train3)[1]
+Y.3<-matrix(rep(0,ntrain3*k),nrow=ntrain3)
+test3 <- set3.1
+
+for (i in 1:ntrain1) {
+  Y.1[i,train1$class[i]]<-1
+}
+  # for dataset 1
+  regfits <- lm(Y.1~PC1+PC2+PC3+PC4+PC5
+                  , data=train1)
+
+for (i in 1:ntrain2) {
+   Y.2[i,train2$class[i]]<-1
+}
+  # for dataset 2
+  regfits <- lm(Y.2~PC1+PC2+PC3+PC4+PC5
+                  , data=train2)
+
+for (i in 1:ntrain3) {
+   Y.3[i,train3$class[i]]<-1
+}
+  # for dataset 3
+  regfits <- lm(Y.3~PC1+PC2+PC3+PC4+PC5
+                  , data=train3)
+
+
+# cat("DATASET 1: REANALYSIS")
+ntest1<-dim(test1)[1]
+yhattest <- numeric(ntest1)
+yfitstest <- matrix(rep(0,ntest1*k),nrow=ntest1)
+for (i in 1:ntest1) {
+  yfitstest[i,] <- as.matrix(test1[i,2:6])%*%regfits$coef[2:6,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+#  sum(yhattest[1:ntest1]!=test1[,1])/ntest1
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy1 <- accuracy1 + sum(yhattest[1:ntest1]==test1[,1])/ntest1
+
+# cat("DATASET 2: precip")
+ntest2<-dim(test2)[1]
+yhattest <- numeric(ntest2)
+yfitstest <- matrix(rep(0,ntest2*k),nrow=ntest2)
+for (i in 1:ntest2) {
+  yfitstest[i,] <- as.matrix(test2[i,2:6])%*%regfits$coef[2:6,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest2]!=test2[,1])/ntest2
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy2 <- accuracy2 +sum(yhattest[1:ntest2]==test2[,1])/ntest2
+
+# cat("DATASET 3: station")
+ntest3<-dim(test3)[1]
+yhattest <- numeric(ntest3)
+yfitstest <- matrix(rep(0,ntest3*k),nrow=ntest3)
+for (i in 1:ntest3) {
+  yfitstest[i,] <- as.matrix(test3[i,2:6])%*%regfits$coef[2:6,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest3]!=test3[,1])/ntest3
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy3 <- accuracy3 + sum(yhattest[1:ntest3]==test3[,1])/ntest3
+
+#dataset 1
+model <- nnet::multinom(class ~PC1+PC2+PC3+PC4+PC5,
+                  data=train1)
+predicted.classes <- model %>% predict(test1)
+logaccuracy1 <- logaccuracy1 + mean(predicted.classes == test1$class)# accuracy
+
+#dataset 2
+model <- nnet::multinom(class ~ PC1+PC2+PC3+PC4+PC5,
+                  data=train2)
+predicted.classes <- model %>% predict(test2)
+logaccuracy2 <- logaccuracy2 + mean(predicted.classes == test2$class)# accuracy
+
+#dataset 3
+model <- nnet::multinom(class ~ PC1+PC2+PC3+PC4+PC5,
+                  data=train3)
+
+predicted.classes <- model %>% predict(test3)
+logaccuracy3 <- logaccuracy3 + mean(predicted.classes == test3$class) # accuracy
+
+#--------------------------------------------------------------------------
+#--------------------------------------------------------------------------
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train1 <- rbind(set1.1, set1.3, set1.5, set1.4)
+ntrain1 <- dim(train1)[1]
+Y.1<-matrix(rep(0,ntrain1*k),nrow=ntrain1)
+test1 <- set1.2
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train2 <- rbind(set2.1, set2.3, set2.5, set2.4)
+ntrain2 <- dim(train2)[1]
+Y.2<-matrix(rep(0,ntrain2*k),nrow=ntrain2)
+test2 <- set2.2
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train3 <- rbind(set3.1, set3.3, set3.5, set3.4)
+ntrain3 <- dim(train3)[1]
+Y.3<-matrix(rep(0,ntrain3*k),nrow=ntrain3)
+test3 <- set3.2
+
+for (i in 1:ntrain1) {
+  Y.1[i,train1$class[i]]<-1
+}
+  # for dataset 1
+  regfits <- lm(Y.1~PC1+PC2+PC3+PC4+PC5
+                  , data=train1)
+
+for (i in 1:ntrain2) {
+   Y.2[i,train2$class[i]]<-1
+}
+  # for dataset 2
+  regfits <- lm(Y.2~PC1+PC2+PC3+PC4+PC5
+                  , data=train2)
+
+for (i in 1:ntrain3) {
+   Y.3[i,train3$class[i]]<-1
+}
+  # for dataset 3
+  regfits <- lm(Y.3~PC1+PC2+PC3+PC4+PC5
+                  , data=train3)
+
+
+# cat("DATASET 1: REANALYSIS")
+ntest1<-dim(test1)[1]
+yhattest <- numeric(ntest1)
+yfitstest <- matrix(rep(0,ntest1*k),nrow=ntest1)
+for (i in 1:ntest1) {
+  yfitstest[i,] <- as.matrix(test1[i,2:6])%*%regfits$coef[2:6,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+#  sum(yhattest[1:ntest1]!=test1[,1])/ntest1
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy1 <- accuracy1 + sum(yhattest[1:ntest1]==test1[,1])/ntest1
+
+# cat("DATASET 2: precip")
+ntest2<-dim(test2)[1]
+yhattest <- numeric(ntest2)
+yfitstest <- matrix(rep(0,ntest2*k),nrow=ntest2)
+for (i in 1:ntest2) {
+  yfitstest[i,] <- as.matrix(test2[i,2:6])%*%regfits$coef[2:6,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest2]!=test2[,1])/ntest2
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy2 <- accuracy2 +sum(yhattest[1:ntest2]==test2[,1])/ntest2
+
+# cat("DATASET 3: station")
+ntest3<-dim(test3)[1]
+yhattest <- numeric(ntest3)
+yfitstest <- matrix(rep(0,ntest3*k),nrow=ntest3)
+for (i in 1:ntest3) {
+  yfitstest[i,] <- as.matrix(test3[i,2:6])%*%regfits$coef[2:6,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest3]!=test3[,1])/ntest3
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy3 <- accuracy3 + sum(yhattest[1:ntest3]==test3[,1])/ntest3
+
+#dataset 1
+model <- nnet::multinom(class ~ PC1+PC2+PC3+PC4+PC5,
+                  data=train1)
+predicted.classes <- model %>% predict(test1)
+logaccuracy1 <- logaccuracy1 + mean(predicted.classes == test1$class)# accuracy
+
+#dataset 2
+model <- nnet::multinom(class ~ PC1+PC2+PC3+PC4+PC5,
+                  data=train2)
+predicted.classes <- model %>% predict(test2)
+logaccuracy2 <- logaccuracy2 + mean(predicted.classes == test2$class)# accuracy
+
+#dataset 3
+model <- nnet::multinom(class ~PC1+PC2+PC3+PC4+PC5,
+                  data=train3)
+
+predicted.classes <- model %>% predict(test3)
+logaccuracy3 <- logaccuracy3 + mean(predicted.classes == test3$class) # accuracy
+
+#-----------------------------------------------------------------------------
+#-----------------------------------------------------------------------------
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train1 <- rbind(set1.1, set1.2, set1.5, set1.3)
+ntrain1 <- dim(train1)[1]
+Y.1<-matrix(rep(0,ntrain1*k),nrow=ntrain1)
+test1 <- set1.4
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train2 <- rbind(set2.1, set2.2, set2.5, set2.3)
+ntrain2 <- dim(train2)[1]
+Y.2<-matrix(rep(0,ntrain2*k),nrow=ntrain2)
+test2 <- set2.4
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train3 <- rbind(set3.1, set3.2, set3.5, set3.3)
+ntrain3 <- dim(train3)[1]
+Y.3<-matrix(rep(0,ntrain3*k),nrow=ntrain3)
+test3 <- set3.4
+
+for (i in 1:ntrain1) {
+  Y.1[i,train1$class[i]]<-1
+}
+  # for dataset 1
+  regfits <- lm(Y.1~PC1+PC2+PC3+PC4+PC5
+                  , data=train1)
+ 
+for (i in 1:ntrain2) {
+   Y.2[i,train2$class[i]]<-1
+}
+  # for dataset 2
+  regfits <- lm(Y.2~PC1+PC2+PC3+PC4+PC5
+                  , data=train2)
+
+for (i in 1:ntrain3) {
+   Y.3[i,train3$class[i]]<-1
+}
+  # for dataset 3
+  regfits <- lm(Y.3~PC1+PC2+PC3+PC4+PC5
+                  , data=train3)
+
+# cat("DATASET 1: REANALYSIS")
+ntest1<-dim(test1)[1]
+yhattest <- numeric(ntest1)
+yfitstest <- matrix(rep(0,ntest1*k),nrow=ntest1)
+for (i in 1:ntest1) {
+  yfitstest[i,] <- as.matrix(test1[i,2:6])%*%regfits$coef[2:6,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+#  sum(yhattest[1:ntest1]!=test1[,1])/ntest1
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy1 <- accuracy1 + sum(yhattest[1:ntest1]==test1[,1])/ntest1
+
+# cat("DATASET 2: precip")
+ntest2<-dim(test2)[1]
+yhattest <- numeric(ntest2)
+yfitstest <- matrix(rep(0,ntest2*k),nrow=ntest2)
+for (i in 1:ntest2) {
+  yfitstest[i,] <- as.matrix(test2[i,2:6])%*%regfits$coef[2:6,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest2]!=test2[,1])/ntest2
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy2 <- accuracy2 +sum(yhattest[1:ntest2]==test2[,1])/ntest2
+
+# cat("DATASET 3: station")
+ntest3<-dim(test3)[1]
+yhattest <- numeric(ntest3)
+yfitstest <- matrix(rep(0,ntest3*k),nrow=ntest3)
+for (i in 1:ntest3) {
+  yfitstest[i,] <- as.matrix(test3[i,2:6])%*%regfits$coef[2:6,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest3]!=test3[,1])/ntest3
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy3 <- accuracy3 + sum(yhattest[1:ntest3]==test3[,1])/ntest3
+
+#dataset 1
+model <- nnet::multinom(class ~ PC1+PC2+PC3+PC4+PC5,
+                  data=train1)
+predicted.classes <- model %>% predict(test1)
+logaccuracy1 <- logaccuracy1 + mean(predicted.classes == test1$class)# accuracy
+
+#dataset 2
+model <- nnet::multinom(class ~PC1+PC2+PC3+PC4+PC5,
+                  data=train2)
+predicted.classes <- model %>% predict(test2)
+logaccuracy2 <- logaccuracy2 + mean(predicted.classes == test2$class)# accuracy
+
+#dataset 3
+model <- nnet::multinom(class ~ PC1+PC2+PC3+PC4+PC5,
+                  data=train3)
+
+predicted.classes <- model %>% predict(test3)
+logaccuracy3 <- logaccuracy3 + mean(predicted.classes == test3$class) # accuracy
+
+
+#--------------------------------------------------------------------------
+#--------------------------------------------------------------------------
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train1 <- rbind(set1.1, set1.2, set1.3, set1.4)
+ntrain1 <- dim(train1)[1]
+Y.1<-matrix(rep(0,ntrain1*k),nrow=ntrain1)
+test1 <- set1.5
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train2 <- rbind(set2.1, set2.2, set2.3, set2.4)
+ntrain2 <- dim(train2)[1]
+Y.2<-matrix(rep(0,ntrain2*k),nrow=ntrain2)
+test2 <- set2.5
+
+# we have to do 5 iterations changing the test set to do k fold cv
+train3 <- rbind(set3.1, set3.2, set3.3, set3.4)
+ntrain3 <- dim(train3)[1]
+Y.3<-matrix(rep(0,ntrain3*k),nrow=ntrain3)
+test3 <- set3.5
+
+for (i in 1:ntrain1) {
+  Y.1[i,train1$class[i]]<-1
+}
+  # for dataset 1
+  regfits <- lm(Y.1~PC1+PC2+PC3+PC4+PC5
+                  , data=train1)
+
+for (i in 1:ntrain2) {
+   Y.2[i,train2$class[i]]<-1
+}
+  # for dataset 2
+  regfits <- lm(Y.2~PC1+PC2+PC3+PC4+PC5
+                  , data=train2)
+  
+for (i in 1:ntrain3) {
+   Y.3[i,train3$class[i]]<-1
+}
+  # for dataset 3
+  regfits <- lm(Y.3~PC1+PC2+PC3+PC4+PC5
+                  , data=train3)
+
+
+# cat("DATASET 1: REANALYSIS")
+ntest1<-dim(test1)[1]
+yhattest <- numeric(ntest1)
+yfitstest <- matrix(rep(0,ntest1*k),nrow=ntest1)
+for (i in 1:ntest1) {
+  yfitstest[i,] <- as.matrix(test1[i,2:6])%*%regfits$coef[2:6,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+#  sum(yhattest[1:ntest1]!=test1[,1])/ntest1
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy1 <- accuracy1 + sum(yhattest[1:ntest1]==test1[,1])/ntest1
+
+# cat("DATASET 2: precip")
+ntest2<-dim(test2)[1]
+yhattest <- numeric(ntest2)
+yfitstest <- matrix(rep(0,ntest2*k),nrow=ntest2)
+for (i in 1:ntest2) {
+  yfitstest[i,] <- as.matrix(test2[i,2:6])%*%regfits$coef[2:6,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest2]!=test2[,1])/ntest2
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy2 <- accuracy2 +sum(yhattest[1:ntest2]==test2[,1])/ntest2
+
+# cat("DATASET 3: station")
+ntest3<-dim(test3)[1]
+yhattest <- numeric(ntest3)
+yfitstest <- matrix(rep(0,ntest3*k),nrow=ntest3)
+for (i in 1:ntest3) {
+  yfitstest[i,] <- as.matrix(test3[i,2:6])%*%regfits$coef[2:6,]+regfits$coef[1,]
+  yhattest[i]<-which(yfitstest[i,]==max(yfitstest[i,]))
+}
+# # misclassification error estimate
+# print("Error: ")
+# sum(yhattest[1:ntest3]!=test3[,1])/ntest3
+
+# accuracy estimate
+# print("Accuracy: ")
+accuracy3 <- accuracy3 + sum(yhattest[1:ntest3]==test3[,1])/ntest3
+
+#dataset 1
+model <- nnet::multinom(class ~ PC1+PC2+PC3+PC4+PC5,
+                  data=train1)
+predicted.classes <- model %>% predict(test1)
+logaccuracy1 <- logaccuracy1 + mean(predicted.classes == test1$class)# accuracy
+
+#dataset 2
+model <- nnet::multinom(class ~PC1+PC2+PC3+PC4+PC5,
+                  data=train2)
+predicted.classes <- model %>% predict(test2)
+logaccuracy2 <- logaccuracy2 + mean(predicted.classes == test2$class)# accuracy
+
+#dataset 3
+model <- nnet::multinom(class ~ PC1+PC2+PC3+PC4+PC5,
+                  data=train3)
+
+predicted.classes <- model %>% predict(test3)
+logaccuracy3 <- logaccuracy3 + mean(predicted.classes == test3$class) # accuracy
+}
+
+cat("Accuracy 1: ", accuracy1/15, "\n")
+cat("Accuracy 2:", accuracy2/15, "\n")
+cat("Accuracy 3:", accuracy3/15, "\n")
+
+cat("LOG:Accuracy 1: ", logaccuracy1/15, "\n")
+cat("LOG:Accuracy 2:", logaccuracy2/15, "\n")
+cat("LOG:Accuracy 3:", logaccuracy3/15, "\n")
+```
+
+
+
